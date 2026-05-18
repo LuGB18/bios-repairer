@@ -7,6 +7,13 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Force GitHub Actions to run JavaScript actions on Node.js 24 instead of the
+# deprecated Node.js 20 runtime. Node 24 becomes the default on 2026-06-02 and
+# Node 20 is removed on 2026-09-16. Opting in now silences the deprecation
+# warning and surfaces any incompatibilities ahead of the forced cutover.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   lint:
     name: ruff

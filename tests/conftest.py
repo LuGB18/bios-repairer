@@ -140,3 +140,24 @@ def tmp_bin(tmp_path):
         p.write_bytes(data)
         return p
     return _write
+
+
+@pytest.fixture
+def run_cli(monkeypatch, capsys):
+    """Invoke bios_heal.main() in-process so pytest-cov records coverage.
+
+    Returns a callable (*args) -> (exit_code, stdout, stderr).
+    Catches SystemExit from argparse-driven flags like --help / --version.
+    """
+    import bios_heal
+
+    def _run(*args: str) -> tuple[int, str, str]:
+        monkeypatch.setattr(sys, "argv", ["bios_heal.py", *args])
+        try:
+            code = bios_heal.main()
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else 1
+        captured = capsys.readouterr()
+        return int(code or 0), captured.out, captured.err
+
+    return _run

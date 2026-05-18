@@ -111,6 +111,8 @@ showing:
 | `--force` | apply heal even when similarity below `--threshold` |
 | `--dry-run` | compute the `.report.txt` only; never write the `.bin` |
 | `--no-backup` | skip the automatic `<dump>.bak` copy |
+| `--json` | also emit a machine-readable `<output>.report.json` (stable schema) |
+| `--version` | print tool version and exit |
 
 ## Region layout (auto-detected from Intel FD)
 
@@ -138,6 +140,39 @@ GUID `8C8CE578-8A3D-4F1C-9935-896185C32DD3`).
 | FFSv2 volumes | offset, length, base CRC32, dump CRC32, header check, status |
 | Padding runs | counts in base / dump / healed, lost & gained sets |
 | Diff summary | bytes changed vs dump; preserve-zone diff (must be 0) |
+
+### JSON report (`--json`)
+
+When `--json` is passed, a sibling `OUTPUT.bin.report.json` is written
+with the same data in machine-readable form. Top-level schema:
+
+```json
+{
+  "schema_version": 1,
+  "tool_version": "1.2.0",
+  "timestamp": "2026-05-18T15:30:00",
+  "files":  { "base": {...}, "dump": {...}, "output": {...} },
+  "mode":   { "dry_run": false, "force": true },
+  "layout": { "fd": { "start": 0, "end": 4096, "length": 4096,
+                       "similarity": 0.9963, "preserved": false }, ... },
+  "preserve": ["me", "nvram"],
+  "similarity": { "global": 0.8551, "threshold": 0.9 },
+  "decision": "heal applied (forced)",
+  "volumes":  [{ "offset": 5242880, "length": 131072,
+                  "base_crc32": "2EA34BBC", "dump_crc32": "FF2EA259",
+                  "header_checksum_ok": true, "guid_type": "FFSv2",
+                  "status": "diff" }, ...],
+  "padding":  { "min_run": 256, "base_runs": 72, "dump_runs": 56,
+                "healed_runs": 55,
+                "lost":   [{ "start": 17603, "end": 32768, "length": 15165 }, ...],
+                "gained": [...] },
+  "diff":     { "total_bytes": 791288, "in_preserve": 0,
+                "outside": 791288, "percent": 9.4329 }
+}
+```
+
+Schema is versioned via `schema_version`. Field semantics are stable
+within a major bump.
 
 ## Exit codes
 

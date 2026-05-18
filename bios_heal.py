@@ -29,11 +29,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import shutil
 import sys
 import zlib
 from datetime import datetime
 from pathlib import Path
+
+__version__ = "1.2.0"
 
 FD_SIG_OFFSET = 0x10
 FD_SIG = b"\x5A\xA5\xF0\x0F"
@@ -187,6 +190,77 @@ def diff_volumes(base_vols: list[dict], dump_vols: list[dict]) -> list[dict]:
     return rows
 
 
+def write_json_report(path: Path, ctx: dict) -> None:
+    """Machine-readable report — stable schema, byte offsets as integers,
+    similarities as floats in [0,1], CRC32 as hex strings (no 0x prefix)."""
+    layout_out: dict[str, dict] = {}
+    for name, (s, e) in ctx["layout"].items():
+        layout_out[name] = {
+            "start": s,
+            "end": e,
+            "length": e - s,
+            "similarity": ctx["region_sim"].get(name, 0.0),
+            "preserved": name in ctx["preserve"],
+        }
+
+    volumes_out = []
+    for row in ctx["volume_diff"]:
+        b = row["base"]
+        d = row["dump"]
+        volumes_out.append({
+            "offset": row["offset"],
+            "length": (b["length"] if b else (d["length"] if d else 0)),
+            "base_crc32": b["crc32"] if b else None,
+            "dump_crc32": d["crc32"] if d else None,
+            "header_checksum_ok": (b["csum_ok"] if b else None),
+            "guid_type": (b["guid_type"] if b else (d["guid_type"] if d else None)),
+            "status": row["status"],
+        })
+
+    base_set = set(ctx["pad_base"])
+    out_set = set(ctx["pad_out"])
+    pad_lost = sorted(base_set - out_set)
+    pad_gained = sorted(out_set - base_set)
+
+    payload = {
+        "schema_version": 1,
+        "tool_version": __version__,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "files": {
+            "base":   {"path": ctx["base_path"], "md5": ctx["base_md5"], "size": ctx["size"]},
+            "dump":   {"path": ctx["dump_path"], "md5": ctx["dump_md5"], "size": ctx["size"]},
+            "output": {"path": ctx["out_path"],  "md5": ctx["out_md5"]},
+        },
+        "mode": {
+            "dry_run": ctx["dry_run"],
+            "force":   ctx["force"],
+        },
+        "layout": layout_out,
+        "preserve": sorted(ctx["preserve"]),
+        "similarity": {
+            "global":    ctx["global_sim"],
+            "threshold": ctx["threshold"],
+        },
+        "decision": ctx["decision"],
+        "volumes": volumes_out,
+        "padding": {
+            "min_run":     ctx["padding_min"],
+            "base_runs":   len(ctx["pad_base"]),
+            "dump_runs":   len(ctx["pad_dump"]),
+            "healed_runs": len(ctx["pad_out"]),
+            "lost":   [{"start": s, "end": e, "length": e - s} for s, e in pad_lost],
+            "gained": [{"start": s, "end": e, "length": e - s} for s, e in pad_gained],
+        },
+        "diff": {
+            "total_bytes":   ctx["diff_total"],
+            "in_preserve":   ctx["diff_preserve"],
+            "outside":       ctx["diff_outside"],
+            "percent":       (ctx["diff_total"] / ctx["size"] * 100) if ctx["size"] else 0.0,
+        },
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
 def write_report(path: Path, ctx: dict) -> None:
     lines: list[str] = []
     lines.append(f"bios_heal report — {datetime.now().isoformat(timespec='seconds')}")
@@ -308,6 +382,10 @@ EXIT CODES
     mode.add_argument("--no-backup", action="store_true",
                       help="skip the automatic <dump>.bak copy that bios_heal writes before "
                            "any output (.bak is never overwritten if it already exists)")
+    mode.add_argument("--json", action="store_true",
+                      help="also emit a machine-readable <output>.report.json alongside the "
+                           "human-readable .report.txt (stable schema, see README)")
+    mode.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     args = ap.parse_args()
 
@@ -408,6 +486,10 @@ EXIT CODES
 
     write_report(report_path, ctx)
     print(f"[+] report: {report_path}")
+    if args.json:
+        json_path = out_path.with_suffix(out_path.suffix + ".report.json")
+        write_json_report(json_path, ctx)
+        print(f"[+] report: {json_path}")
 
     if args.dry_run:
         print("[+] dry-run — output not written")

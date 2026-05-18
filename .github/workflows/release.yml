@@ -94,3 +94,44 @@ jobs:
           generate_release_notes: true
           body_path: CHANGELOG.md
           fail_on_unmatched_files: true
+
+  pypi:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Opt-in: only runs when the repo variable PUBLISH_TO_PYPI is set to
+    # "true" (Settings -> Secrets and variables -> Actions -> Variables).
+    # This lets tag pushes build binaries + create a GitHub Release
+    # without ever shipping to PyPI until the operator is ready.
+    if: startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_TO_PYPI == 'true'
+    # Trusted Publishing OIDC token (used when password is not supplied);
+    # harmless if PyPI-side trusted publishing is not configured and the
+    # PYPI_API_TOKEN secret is set instead.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      - name: twine check
+        run: python -m twine check dist/*
+
+      - name: Publish to PyPI
+        # Uses the PYPI_API_TOKEN secret if present, otherwise falls back
+        # to Trusted Publishing via the OIDC id-token issued above.
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true

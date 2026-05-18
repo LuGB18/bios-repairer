@@ -64,10 +64,30 @@ showing:
 - [MEAnalyzer](https://github.com/platomav/MEAnalyzer) — Intel ME firmware sanity / version check
 - `flashrom` / CH341A — actually programming the SPI chip
 
-## Downloads
+## Install
 
-Prebuilt binaries are attached to every GitHub Release.
-No Python install required.
+Three routes, pick whichever is most convenient.
+
+### A) `pip install` from GitHub (any tag, no PyPI account needed)
+
+```sh
+pip install git+https://github.com/LuGB18/bios-repairer.git@v2.0.0
+```
+
+Installs both scripts as PATH commands: `bios_heal` and `bios_flash`.
+
+### B) `pip install bios-repairer` (PyPI)
+
+Available once the `PUBLISH_TO_PYPI` repo variable is flipped to `true`
+and a tag is pushed. Until then this route is not active.
+
+```sh
+pip install bios-repairer
+```
+
+### C) Prebuilt single-file binaries (no Python required)
+
+Attached to every GitHub Release.
 
 | File | Platform | Tool |
 |---|---|---|
@@ -79,7 +99,8 @@ No Python install required.
 Releases page: <https://github.com/LuGB18/bios-repairer/releases>
 
 `bios_flash` additionally requires **flashrom** installed and reachable
-on PATH (or via `--flashrom /path/to/flashrom`).
+on PATH (or via `--flashrom /path/to/flashrom`). `flashrom` is NOT
+bundled into the prebuilt binaries.
 
 ## Requirements
 

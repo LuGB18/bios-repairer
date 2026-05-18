@@ -1,5 +1,11 @@
 # bios-repairer
 
+[![tests](https://github.com/LuGB18/bios-repairer/actions/workflows/test.yml/badge.svg)](https://github.com/LuGB18/bios-repairer/actions/workflows/test.yml)
+[![coverage](https://codecov.io/gh/LuGB18/bios-repairer/branch/main/graph/badge.svg)](https://codecov.io/gh/LuGB18/bios-repairer)
+[![ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![license](https://img.shields.io/github/license/LuGB18/bios-repairer)](LICENSE)
+
 > Repair corrupted dumps of a BIOS with a base BIOS. Keeps your unique board secrets.
 
 `bios_heal.py` — SPI BIOS dump healer for Intel-descriptor flash images
@@ -201,6 +207,26 @@ Created or overwritten:
 | `no Intel FD in base — using DEFAULT_LAYOUT` | base has no FD signature `5A A5 F0 0F` @ `0x10`. Either BIOS-region-only image or non-Intel platform. Provide a full 8 MiB Intel image. |
 | `size mismatch: base=X dump=Y` | files differ in length. Re-dump or pad the base to match SPI chip capacity. |
 | `below threshold — copying dump unchanged` | the two images differ significantly. Inspect the report; lower `--threshold` or pick a different BASE. |
+
+## Development
+
+```sh
+# install dev deps (pytest, pytest-cov, ruff)
+python -m pip install -e ".[dev]"
+
+# run tests
+pytest
+
+# run tests with coverage
+pytest --cov=bios_heal --cov-report=term-missing
+
+# lint
+ruff check bios_heal.py tests/
+```
+
+The test suite uses **synthetic** SPI images built in-memory by
+`tests/conftest.py`. No real firmware, no board-specific data, no
+sensitive content is committed to the repository.
 
 ## License
 

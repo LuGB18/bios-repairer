@@ -145,7 +145,7 @@ def detect_padding(data: bytes, min_run: int = PADDING_MIN_RUN) -> list[tuple[in
 def similarity(a: bytes, b: bytes) -> float:
     if len(a) != len(b) or not a:
         return 0.0
-    return sum(1 for x, y in zip(a, b) if x == y) / len(a)
+    return sum(1 for x, y in zip(a, b, strict=True) if x == y) / len(a)
 
 
 def per_region_similarity(base: bytes, dump: bytes,
@@ -211,7 +211,8 @@ def write_report(path: Path, ctx: dict) -> None:
     lines.append("-" * 72)
     lines.append(f"  {'offset':>10}  {'length':>10}  {'base_crc':>10}  {'dump_crc':>10}  {'hdr':>5}  status")
     for row in ctx["volume_diff"]:
-        b = row["base"]; d = row["dump"]
+        b = row["base"]
+        d = row["dump"]
         bcrc = b["crc32"] if b else "----"
         dcrc = d["crc32"] if d else "----"
         blen = b["length"] if b else (d["length"] if d else 0)
@@ -224,8 +225,8 @@ def write_report(path: Path, ctx: dict) -> None:
     lines.append(f"  base   : {len(ctx['pad_base'])} runs")
     lines.append(f"  dump   : {len(ctx['pad_dump'])} runs")
     lines.append(f"  healed : {len(ctx['pad_out'])} runs")
-    base_set = {r for r in ctx["pad_base"]}
-    out_set = {r for r in ctx["pad_out"]}
+    base_set = set(ctx["pad_base"])
+    out_set = set(ctx["pad_out"])
     lost = sorted(base_set - out_set)
     gained = sorted(out_set - base_set)
     if lost:
@@ -353,8 +354,10 @@ EXIT CODES
     vol_diff = diff_volumes(base_vols, dump_vols)
     print(f"[+] FFSv2 volumes: base={len(base_vols)} dump={len(dump_vols)}")
     for row in vol_diff:
-        b = row["base"]; d = row["dump"]
-        bcrc = b["crc32"] if b else "----"; dcrc = d["crc32"] if d else "----"
+        b = row["base"]
+        d = row["dump"]
+        bcrc = b["crc32"] if b else "----"
+        dcrc = d["crc32"] if d else "----"
         print(f"    0x{row['offset']:08X}  base={bcrc} dump={dcrc}  {row['status']}")
 
     preserve = {z.strip() for z in args.preserve.split(",") if z.strip()}
@@ -380,11 +383,11 @@ EXIT CODES
         print("[!] output size mismatch — aborting", file=sys.stderr)
         return 3
 
-    diff_total = sum(1 for a, b in zip(dump, healed) if a != b)
+    diff_total = sum(1 for a, b in zip(dump, healed, strict=True) if a != b)
     diff_preserve = 0
     for name in preserve_used:
         s, e = layout[name]
-        diff_preserve += sum(1 for x, y in zip(dump[s:e], healed[s:e]) if x != y)
+        diff_preserve += sum(1 for x, y in zip(dump[s:e], healed[s:e], strict=True) if x != y)
     diff_outside = diff_total - diff_preserve
 
     pad_base = detect_padding(base, args.padding_min)

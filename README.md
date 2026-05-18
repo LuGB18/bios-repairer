@@ -1,7 +1,7 @@
 # bios-repairer
 
 [![tests](https://github.com/LuGB18/bios-repairer/actions/workflows/test.yml/badge.svg)](https://github.com/LuGB18/bios-repairer/actions/workflows/test.yml)
-[![coverage](https://codecov.io/gh/LuGB18/bios-repairer/branch/main/graph/badge.svg)](https://codecov.io/gh/LuGB18/bios-repairer)
+[![codecov](https://codecov.io/github/LuGB18/bios-repairer/graph/badge.svg?token=V0843PTOC2)](https://codecov.io/github/LuGB18/bios-repairer)
 [![ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![license](https://img.shields.io/github/license/LuGB18/bios-repairer)](LICENSE)

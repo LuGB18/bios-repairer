@@ -36,7 +36,7 @@ import zlib
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 FD_SIG_OFFSET = 0x10
 FD_SIG = b"\x5A\xA5\xF0\x0F"
@@ -44,6 +44,26 @@ FD_SIG = b"\x5A\xA5\xF0\x0F"
 FFS_V2_GUID = bytes.fromhex("78E58C8C3D8A1C4F99358961") + b"\x85\xC3\x2D\xD3"
 FFS_V3_GUID = bytes.fromhex("78E58C8C3D8A6D4D99358961") + b"\x85\xC3\x2D\xD3"  # FFSv3 (rare on B75)
 FVH_SIG = b"_FVH"
+
+# AMI NVAR variable store entry signature
+NVAR_SIG = b"NVAR"
+
+# NVAR variable names treated as "board identity" by --preserve dmi.
+# Only these are byte-copied from DUMP into BASE; everything else stays clean.
+DMI_VARIABLE_NAMES: frozenset[str] = frozenset({
+    "Setup",
+    "PlatformLang",
+    "MemoryTypeInformation",
+    "PreviousMemoryTypeInformation",
+    "AMITSESetup",
+    "SystemSerialNumber",
+    "SystemUuid",
+    "SystemSKU",
+    "BoardSerialNumber",
+    "ChassisSerialNumber",
+    "SmbiosData",
+    "DmiData",
+})
 
 DEFAULT_LAYOUT: dict[str, tuple[int, int]] = {
     "fd":    (0x000000, 0x001000),
@@ -53,6 +73,7 @@ DEFAULT_LAYOUT: dict[str, tuple[int, int]] = {
 }
 
 DEFAULT_PRESERVE = {"me", "nvram"}
+KNOWN_ZONES = {"fd", "me", "bios", "gbe", "pdr", "nvram", "dmi"}
 
 PADDING_MIN_RUN = 256
 SIMILARITY_THRESHOLD = 0.90
@@ -161,11 +182,168 @@ def heal(base: bytes, dump: bytes,
          preserve: set[str]) -> bytes:
     out = bytearray(base)
     for name in preserve:
-        if name not in layout:
+        if name == "dmi" or name not in layout:
             continue
         s, e = layout[name]
         out[s:e] = dump[s:e]
     return bytes(out)
+
+
+def _extract_nvar_name(data: bytes, offset: int, attrs: int, size: int) -> str | None:
+    """Extract the variable name from an NVAR record starting at `offset`.
+
+    Returns None for DATA_ONLY records or records whose name field cannot be
+    located inside the record boundary.
+    """
+    if attrs & 0x08:  # DATA_ONLY — no name
+        return None
+    end = offset + size
+    pos = offset + 10  # after 4 sig + 2 size + 3 next + 1 attrs
+    if attrs & 0x04:
+        pos += 16  # full GUID stored
+    else:
+        pos += 1   # single-byte GUID index
+    if pos >= end:
+        return None
+    if attrs & 0x02:
+        # ASCII null-terminated
+        nul = data.find(b"\x00", pos, end)
+        if nul < 0:
+            return None
+        try:
+            return data[pos:nul].decode("ascii")
+        except UnicodeDecodeError:
+            return None
+    # UCS-2 little endian, null-terminated
+    z = pos
+    while z + 1 < end and not (data[z] == 0 and data[z + 1] == 0):
+        z += 2
+    try:
+        return data[pos:z].decode("utf-16-le", errors="replace")
+    except UnicodeDecodeError:
+        return None
+
+
+def find_nvar_entries(data: bytes, start: int, end: int) -> dict[str, tuple[int, int]]:
+    """Scan [start, end) for NVAR entries; return {name: (offset, size)}.
+
+    Only entries with a valid header and a parseable ASCII or UCS-2 name are
+    indexed. Later entries with the same name overwrite earlier ones (AMI
+    NVAR semantics — newest record wins).
+    """
+    result: dict[str, tuple[int, int]] = {}
+    pos = start
+    while pos < end - 10:
+        if data[pos:pos + 4] != NVAR_SIG:
+            pos += 1
+            continue
+        size = int.from_bytes(data[pos + 4:pos + 6], "little")
+        if size < 10 or pos + size > end:
+            pos += 1
+            continue
+        attrs = data[pos + 9]
+        name = _extract_nvar_name(data, pos, attrs, size)
+        if name:
+            result[name] = (pos, size)
+        pos += size
+    return result
+
+
+def transplant_dmi_variables(base_buf: bytearray, dump: bytes,
+                             nvram_zone: tuple[int, int],
+                             names: frozenset[str] = DMI_VARIABLE_NAMES) -> dict:
+    """In-place: for every whitelisted NVAR variable found in both DUMP and
+    BASE at the same byte length, replace the BASE record bytes with DUMP's.
+
+    Mismatched-size and missing variables are recorded but not replaced —
+    different sizes would shift the NVAR chain and corrupt the store.
+    """
+    nvram_start, nvram_end = nvram_zone
+    base_entries = find_nvar_entries(bytes(base_buf), nvram_start, nvram_end)
+    dump_entries = find_nvar_entries(dump, nvram_start, nvram_end)
+
+    transplanted: list[str] = []
+    size_mismatch: list[dict] = []
+    missing: list[str] = []
+
+    for name in sorted(names):
+        if name not in dump_entries:
+            continue
+        if name not in base_entries:
+            missing.append(name)
+            continue
+        b_off, b_size = base_entries[name]
+        d_off, d_size = dump_entries[name]
+        if b_size != d_size:
+            size_mismatch.append({"name": name, "base_size": b_size, "dump_size": d_size})
+            continue
+        base_buf[b_off:b_off + b_size] = dump[d_off:d_off + d_size]
+        transplanted.append(name)
+
+    return {
+        "transplanted": transplanted,
+        "size_mismatch": size_mismatch,
+        "missing_in_base": missing,
+        "candidates_in_dump": sorted(set(dump_entries) & set(names)),
+    }
+
+
+def verify_dump(primary: bytes, secondary: bytes, max_diff_offsets: int = 8) -> dict:
+    """Compare two dumps of the same board. Returns status + first offsets that differ."""
+    if len(primary) != len(secondary):
+        return {
+            "status": "size_mismatch",
+            "primary_size": len(primary),
+            "secondary_size": len(secondary),
+            "primary_md5": md5(primary),
+            "secondary_md5": md5(secondary),
+        }
+    if primary == secondary:
+        return {
+            "status": "ok",
+            "primary_md5": md5(primary),
+            "secondary_md5": md5(secondary),
+        }
+    diffs: list[int] = []
+    for i, (a, b) in enumerate(zip(primary, secondary, strict=True)):
+        if a != b:
+            diffs.append(i)
+            if len(diffs) >= max_diff_offsets:
+                break
+    return {
+        "status": "differ",
+        "first_diff_offsets": diffs,
+        "primary_md5": md5(primary),
+        "secondary_md5": md5(secondary),
+    }
+
+
+def smoke_test(healed: bytes, base: bytes) -> dict:
+    """Re-parse the healed buffer; require FD + every BASE FFSv2 volume present
+    at the same offset and length in the healed image."""
+    findings: list[str] = []
+    healed_fd = parse_fd(healed)
+    if parse_fd(base) is not None and healed_fd is None:
+        findings.append("FD signature lost in healed image")
+
+    bios_range = (parse_fd(base) or DEFAULT_LAYOUT).get("bios", (0, len(base)))
+    base_vols = scan_ffsv2_volumes(base, *bios_range)
+    healed_vols = {v["offset"]: v for v in scan_ffsv2_volumes(healed, *bios_range)}
+
+    for v in base_vols:
+        h = healed_vols.get(v["offset"])
+        if h is None:
+            findings.append(f"missing FFSv2 volume at 0x{v['offset']:08X}")
+            continue
+        if h["length"] != v["length"]:
+            findings.append(
+                f"volume at 0x{v['offset']:08X} length changed "
+                f"({v['length']} -> {h['length']})"
+            )
+        if not h["csum_ok"]:
+            findings.append(f"volume at 0x{v['offset']:08X} header checksum invalid")
+
+    return {"status": "ok" if not findings else "fail", "findings": findings}
 
 
 def fmt_zone(s: int, e: int) -> str:
@@ -257,6 +435,9 @@ def write_json_report(path: Path, ctx: dict) -> None:
             "outside":       ctx["diff_outside"],
             "percent":       (ctx["diff_total"] / ctx["size"] * 100) if ctx["size"] else 0.0,
         },
+        "verify_dump": ctx.get("verify_dump_status"),
+        "dmi_transplant": ctx.get("dmi_status"),
+        "smoke": ctx.get("smoke_status"),
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -315,6 +496,36 @@ def write_report(path: Path, ctx: dict) -> None:
     lines.append(f"  bytes changed vs dump : {ctx['diff_total']} ({ctx['diff_total'] / ctx['size'] * 100:.4f}%)")
     lines.append(f"  inside preserve       : {ctx['diff_preserve']} (must be 0)")
     lines.append(f"  outside (healed code) : {ctx['diff_outside']}")
+
+    if ctx.get("verify_dump_status") is not None:
+        v = ctx["verify_dump_status"]
+        lines.append("")
+        lines.append("Verify dump")
+        lines.append("-" * 72)
+        lines.append(f"  status : {v['status']}")
+        if v["status"] == "differ":
+            offs = ", ".join(f"0x{o:08X}" for o in v["first_diff_offsets"])
+            lines.append(f"  first differing offsets: {offs}")
+
+    if ctx.get("dmi_status") is not None:
+        d = ctx["dmi_status"]
+        lines.append("")
+        lines.append("DMI variable transplant")
+        lines.append("-" * 72)
+        lines.append(f"  transplanted    : {d['transplanted']}")
+        lines.append(f"  size_mismatch   : {d['size_mismatch']}")
+        lines.append(f"  missing_in_base : {d['missing_in_base']}")
+        lines.append(f"  candidates_in_dump: {d['candidates_in_dump']}")
+
+    if ctx.get("smoke_status") is not None:
+        s = ctx["smoke_status"]
+        lines.append("")
+        lines.append("Smoke test (post-heal re-parse)")
+        lines.append("-" * 72)
+        lines.append(f"  status : {s['status']}")
+        for f in s["findings"]:
+            lines.append(f"    - {f}")
+
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -327,13 +538,21 @@ EXAMPLES
   # Standard heal (aborts if dump <90% similar to base)
   python bios_heal.py clean.bin board_dump.bin -o repaired.bin
 
-  # Aggressive heal of badly corrupted dump, also preserve GbE MAC
+  # Surgical: copy ME from dump but only DMI/serial variables from NVRAM
   python bios_heal.py clean.bin dump.bin -o out.bin --force \\
-      --threshold 0.5 --preserve me,nvram,gbe
+      --preserve me,dmi
+
+  # Two-dump consistency check + post-heal structural smoke test
+  python bios_heal.py clean.bin dump.bin -o out.bin \\
+      --verify-dump second_dump.bin --smoke
 
 PRESERVE ZONES (board-specific, copied from DUMP)
   me     Intel Management Engine region (MEBx config, board fuse)
   nvram  First FFSv2 volume inside BIOS region (serial / UUID / NIC MAC)
+  dmi    Surgical: only DMI/identity NVAR variables inside the NVRAM
+         volume (Serial, UUID, MAC, SystemSKU, MemoryTypeInformation,
+         AMITSESetup, Setup) — leaves the rest of the NVRAM store clean.
+         Combine with `me` for typical use: --preserve me,dmi
   gbe    Integrated GbE region (NIC MAC) — only if FD declares it
   fd     Flash Descriptor (rarely preserved; usually heal from base)
   bios   Entire BIOS region (rarely preserved; defeats the heal)
@@ -341,8 +560,10 @@ PRESERVE ZONES (board-specific, copied from DUMP)
 EXIT CODES
   0  heal applied
   1  below threshold and not --force (output = dump unchanged) or dry-run abort
-  2  base/dump size mismatch
+  2  base / dump / verify-dump size mismatch
   3  output size sanity check failed
+  4  --verify-dump second dump differs from primary dump
+  5  --smoke post-heal structural check failed
 """
     ap = argparse.ArgumentParser(
         prog="bios_heal.py",
@@ -369,7 +590,7 @@ EXIT CODES
                           f"(default {SIMILARITY_THRESHOLD}); below this, dump is copied unchanged")
     tun.add_argument("--preserve", default=",".join(sorted(DEFAULT_PRESERVE)), metavar="LIST",
                      help="comma-separated zones copied verbatim from DUMP "
-                          "(default: me,nvram). Choices: fd,me,bios,gbe,pdr,nvram")
+                          "(default: me,nvram). Choices: fd,me,bios,gbe,pdr,nvram,dmi")
     tun.add_argument("--padding-min", type=int, default=PADDING_MIN_RUN, metavar="N",
                      help=f"min consecutive 0xFF bytes counted as a padding run "
                           f"(default {PADDING_MIN_RUN})")
@@ -385,6 +606,13 @@ EXIT CODES
     mode.add_argument("--json", action="store_true",
                       help="also emit a machine-readable <output>.report.json alongside the "
                            "human-readable .report.txt (stable schema, see README)")
+    mode.add_argument("--verify-dump", metavar="FILE",
+                      help="path to a SECOND independent dump of the same board; the heal "
+                           "aborts (exit 4) if md5 doesn't match the primary DUMP — guards "
+                           "against flaky chip-clip reads")
+    mode.add_argument("--smoke", action="store_true",
+                      help="re-parse the healed image in memory before writing; abort (exit 5) "
+                           "if FD is lost or any FFSv2 volume from BASE is missing/changed")
     mode.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     args = ap.parse_args()
@@ -405,6 +633,23 @@ EXIT CODES
     if len(base) != len(dump):
         print(f"[!] size mismatch: base={len(base)} dump={len(dump)}", file=sys.stderr)
         return 2
+
+    verify_status: dict | None = None
+    if args.verify_dump:
+        verify_path = Path(args.verify_dump)
+        secondary = verify_path.read_bytes()
+        print(f"[+] verify: {verify_path} ({len(secondary)} B, md5={md5(secondary)})")
+        verify_status = verify_dump(dump, secondary)
+        if verify_status["status"] == "size_mismatch":
+            print(f"[!] verify-dump size mismatch: primary={verify_status['primary_size']} "
+                  f"secondary={verify_status['secondary_size']}", file=sys.stderr)
+            return 2
+        if verify_status["status"] == "differ":
+            print("[!] verify-dump differs from primary dump — re-dump the chip", file=sys.stderr)
+            offsets = ", ".join(f"0x{o:08X}" for o in verify_status["first_diff_offsets"])
+            print(f"    first differing offsets: {offsets}", file=sys.stderr)
+            return 4
+        print("[+] verify: OK (md5 matches)")
 
     layout = parse_fd(base)
     if layout is None:
@@ -439,13 +684,17 @@ EXIT CODES
         print(f"    0x{row['offset']:08X}  base={bcrc} dump={dcrc}  {row['status']}")
 
     preserve = {z.strip() for z in args.preserve.split(",") if z.strip()}
-    unknown = preserve - layout.keys()
+    unknown = preserve - KNOWN_ZONES
     if unknown:
         print(f"[!] unknown preserve zones ignored: {sorted(unknown)}", file=sys.stderr)
-        preserve &= layout.keys()
+        preserve &= KNOWN_ZONES
+    # Zones that map to a region in the FD layout (everything except 'dmi',
+    # which operates at variable granularity inside the NVRAM volume)
+    region_preserve = (preserve - {"dmi"}) & layout.keys()
 
     decision = ""
     healed: bytes
+    dmi_status: dict | None = None
     if global_sim < args.threshold and not args.force:
         decision = f"abort (similarity {global_sim * 100:.2f}% < threshold {args.threshold * 100:.0f}%)"
         print(f"[!] {decision} — output = dump unchanged")
@@ -455,15 +704,36 @@ EXIT CODES
         decision = "heal applied" + (" (forced)" if global_sim < args.threshold else "")
         preserve_used = preserve
         print(f"[+] preserving from dump: {sorted(preserve_used)}")
-        healed = heal(base, dump, layout, preserve_used)
+        healed_buf = bytearray(heal(base, dump, layout, region_preserve))
+        if "dmi" in preserve_used and "nvram" in layout:
+            dmi_status = transplant_dmi_variables(healed_buf, dump, layout["nvram"])
+            print(f"[+] dmi transplant: copied {len(dmi_status['transplanted'])} "
+                  f"variable(s) — {dmi_status['transplanted']}")
+            if dmi_status["size_mismatch"]:
+                print(f"    size_mismatch: {dmi_status['size_mismatch']}", file=sys.stderr)
+            if dmi_status["missing_in_base"]:
+                print(f"    missing_in_base: {dmi_status['missing_in_base']}", file=sys.stderr)
+        healed = bytes(healed_buf)
 
     if len(healed) != len(base):
         print("[!] output size mismatch — aborting", file=sys.stderr)
         return 3
 
+    smoke_status: dict | None = None
+    if args.smoke and decision.startswith("heal"):
+        smoke_status = smoke_test(healed, base)
+        if smoke_status["status"] == "fail":
+            print("[!] smoke test FAILED:", file=sys.stderr)
+            for f in smoke_status["findings"]:
+                print(f"    - {f}", file=sys.stderr)
+        else:
+            print("[+] smoke test: OK")
+
     diff_total = sum(1 for a, b in zip(dump, healed, strict=True) if a != b)
     diff_preserve = 0
     for name in preserve_used:
+        if name not in layout:
+            continue
         s, e = layout[name]
         diff_preserve += sum(1 for x, y in zip(dump[s:e], healed[s:e], strict=True) if x != y)
     diff_outside = diff_total - diff_preserve
@@ -482,6 +752,9 @@ EXIT CODES
         "padding_min": args.padding_min,
         "diff_total": diff_total, "diff_preserve": diff_preserve, "diff_outside": diff_outside,
         "dry_run": args.dry_run, "force": args.force,
+        "verify_dump_status": verify_status,
+        "dmi_status": dmi_status,
+        "smoke_status": smoke_status,
     }
 
     write_report(report_path, ctx)
@@ -490,6 +763,10 @@ EXIT CODES
         json_path = out_path.with_suffix(out_path.suffix + ".report.json")
         write_json_report(json_path, ctx)
         print(f"[+] report: {json_path}")
+
+    if smoke_status is not None and smoke_status["status"] == "fail":
+        print("[!] aborting — output NOT written (smoke test failed)", file=sys.stderr)
+        return 5
 
     if args.dry_run:
         print("[+] dry-run — output not written")

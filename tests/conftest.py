@@ -31,6 +31,8 @@ DEFAULT_REGIONS = {
 }
 
 FFS_V2_GUID = bytes.fromhex("78E58C8C3D8A1C4F99358961") + b"\x85\xC3\x2D\xD3"
+NVAR_SIG = b"NVAR"
+NVAR_INJECT_OFFSET = 0x500100  # well past FFSv2 header (0x500000-0x500048)
 
 
 def _flreg(base_4k: int, limit_4k: int) -> bytes:
@@ -140,6 +142,68 @@ def tmp_bin(tmp_path):
         p.write_bytes(data)
         return p
     return _write
+
+
+def make_nvar_record(name: str, value: bytes, guid_idx: int = 1) -> bytes:
+    """Build a minimal Full NVAR record (ASCII name, GUID-by-index, VALID set).
+
+    Layout: 'NVAR' (4) + size (2 LE) + next (3 = FF FF FF terminal) +
+            attrs (1, 0x82 = VALID | ASCII_NAME) +
+            guid_idx (1) + name + '\\0' (N+1) +
+            value (M)
+    Total size = 11 + (N+1) + M
+    """
+    name_bytes = name.encode("ascii") + b"\x00"
+    body = bytes([guid_idx]) + name_bytes + value
+    header_size = 10
+    total_size = header_size + len(body)
+    return (
+        NVAR_SIG
+        + total_size.to_bytes(2, "little")
+        + b"\xFF\xFF\xFF"
+        + bytes([0x82])
+        + body
+    )
+
+
+def inject_nvars(buf: bytearray, records: list[bytes], start: int = NVAR_INJECT_OFFSET) -> int:
+    """Write a sequence of NVAR records contiguously into buf starting at `start`.
+    Returns the offset of the first byte AFTER the last record."""
+    pos = start
+    for rec in records:
+        buf[pos:pos + len(rec)] = rec
+        pos += len(rec)
+    return pos
+
+
+@pytest.fixture
+def base_with_nvars(base_image) -> bytes:
+    """base_image with three known NVAR variables injected into the NVRAM volume.
+
+    Setup (0x80 zeros), SystemSerialNumber ("BASE_SERIAL...."), SystemUuid.
+    All three are also present in the dump_with_nvars fixture at the same
+    offsets with the same byte LENGTHS, so transplant_dmi_variables can
+    swap the values safely.
+    """
+    buf = bytearray(base_image)
+    inject_nvars(buf, [
+        make_nvar_record("Setup", b"\x00" * 0x80),
+        make_nvar_record("SystemSerialNumber", b"BASE-SERIAL-0000"),
+        make_nvar_record("SystemUuid", b"BASE-UUID-BYTES-AAAAAAAAAAAAAAAA"),
+    ])
+    return bytes(buf)
+
+
+@pytest.fixture
+def dump_with_nvars(dump_image) -> bytes:
+    """dump_image with the same three NVAR variables, same sizes, different values."""
+    buf = bytearray(dump_image)
+    inject_nvars(buf, [
+        make_nvar_record("Setup", b"\x11" * 0x80),
+        make_nvar_record("SystemSerialNumber", b"DUMP-SERIAL-9999"),
+        make_nvar_record("SystemUuid", b"DUMP-UUID-BYTES-BBBBBBBBBBBBBBBB"),
+    ])
+    return bytes(buf)
 
 
 @pytest.fixture

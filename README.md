@@ -55,6 +55,16 @@ showing:
 - [MEAnalyzer](https://github.com/platomav/MEAnalyzer) — Intel ME firmware sanity / version check
 - `flashrom` / CH341A — actually programming the SPI chip
 
+## Downloads
+
+Prebuilt binaries are attached to every GitHub Release (since v1.3.0).
+No Python install required.
+
+- **Windows** — grab `bios_heal.exe` from the latest release page
+  ([Releases](https://github.com/LuGB18/bios-repairer/releases))
+- **Linux** — grab `bios_heal` (single ELF executable) from the same page
+- **From source** — clone and run `python bios_heal.py ...` (Python 3.10+)
+
 ## Requirements
 
 - Python 3.10+ (uses PEP 604 union syntax `X | None`)
@@ -112,6 +122,8 @@ showing:
 | `--dry-run` | compute the `.report.txt` only; never write the `.bin` |
 | `--no-backup` | skip the automatic `<dump>.bak` copy |
 | `--json` | also emit a machine-readable `<output>.report.json` (stable schema) |
+| `--verify-dump FILE` | second independent dump of the same board; abort (exit 4) if md5 differs |
+| `--smoke` | re-parse the healed image before writing; abort (exit 5) if structure breaks |
 | `--version` | print tool version and exit |
 
 ## Region layout (auto-detected from Intel FD)
@@ -128,6 +140,22 @@ For ASRock B75M-DGS / W25Q64BV the FD declares:
 The NVRAM zone is *not* in the FD — it is auto-derived by scanning the
 BIOS region for the first FFSv2 volume header signature (`_FVH`,
 GUID `8C8CE578-8A3D-4F1C-9935-896185C32DD3`).
+
+### Preserve granularity: `nvram` vs `dmi`
+
+- `--preserve nvram` (default) copies the *entire* 128 KiB NVRAM volume
+  from DUMP. Easy, but drags along stale boot entries, MRC training
+  data, and OS-side junk.
+- `--preserve dmi` (since v1.3.0) is surgical: it walks the AMI NVAR
+  store and only swaps records whose variable name is in the identity
+  whitelist (`Setup`, `SystemSerialNumber`, `SystemUuid`, `SystemSKU`,
+  `BoardSerialNumber`, `ChassisSerialNumber`, `MemoryTypeInformation`,
+  `PreviousMemoryTypeInformation`, `AMITSESetup`, `PlatformLang`,
+  `SmbiosData`, `DmiData`). Records whose size differs between DUMP and
+  BASE are skipped (would corrupt the NVAR chain) and reported.
+
+Typical surgical heal: `--preserve me,dmi` (ME from board, DMI from board,
+clean NVRAM and BIOS from base).
 
 ## Report file format
 
@@ -180,8 +208,10 @@ within a major bump.
 |---|---|
 | `0` | heal applied successfully (output written) |
 | `1` | similarity below threshold and `--force` not set (output = dump unchanged), or `--dry-run` completed without heal |
-| `2` | base and dump have different sizes |
+| `2` | base / dump / verify-dump size mismatch |
 | `3` | output size sanity check failed |
+| `4` | `--verify-dump` second dump differs from primary dump |
+| `5` | `--smoke` post-heal structural check failed |
 
 ## Common scenarios
 
@@ -209,6 +239,21 @@ python bios_heal.py clean.bin dump.bin -o out.bin \
 **Quiet padding output (only count runs ≥ 4 KiB)**
 ```sh
 python bios_heal.py clean.bin dump.bin -o out.bin --padding-min 4096
+```
+
+**Surgical NVRAM: ME from dump + only identity vars from dump (clean NVRAM otherwise)**
+```sh
+python bios_heal.py clean.bin dump.bin -o out.bin --force --preserve me,dmi
+```
+
+**Two-dump consistency check before healing**
+```sh
+python bios_heal.py clean.bin dump1.bin --verify-dump dump2.bin -o out.bin
+```
+
+**Pre-write structural smoke test (refuse to write a broken image)**
+```sh
+python bios_heal.py clean.bin dump.bin -o out.bin --smoke
 ```
 
 ## Safety notes

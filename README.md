@@ -1,2 +1,207 @@
 # bios-repairer
-Repair corrupted dumps of an bios with an base bios. Keeps your Unique Secrets of your board.
+
+> Repair corrupted dumps of a BIOS with a base BIOS. Keeps your unique board secrets.
+
+`bios_heal.py` — SPI BIOS dump healer for Intel-descriptor flash images
+(8 MiB / W25Q64BV class). Tested platform: ASRock B75M-DGS (Ivy Bridge,
+AMI Aptio IV).
+
+---
+
+## What it does
+
+You have two BIOS images:
+
+- **BASE** — a clean, known-good reference (factory ROM or a modded ROM
+  you trust). Source of *healing bytes*.
+- **DUMP** — an SPI dump from the real board. May be corrupted in some
+  areas but contains the board's unique secrets: serial number, UUID,
+  NIC MAC, Intel ME fuse/config. Source of *preserved bytes*.
+
+`bios_heal.py` merges them into a single output `.bin`:
+
+```
+output = BASE everywhere
+       EXCEPT the "preserve zones", which are copied verbatim from DUMP.
+```
+
+It writes a human-readable `<output>.report.txt` next to the output,
+showing:
+
+- Region layout parsed from the Intel Flash Descriptor (FD)
+- Per-region similarity (DUMP vs BASE)
+- Every FFSv2 volume in the BIOS region, with CRC32 from each side
+- Padding (`0xFF`) runs gained/lost by the heal
+- Byte-diff totals (must be 0 inside preserve zones)
+
+## When to use
+
+- SPI dump shows random corruption in code areas but you still trust the
+  ME region and the board-specific NVRAM.
+- You want to flash a modded BIOS image but keep the board's original
+  serial / UUID / MAC / MEBx config.
+- You want a forensic diff report between two ROMs without flashing
+  anything (use `--dry-run`).
+
+**Not** a substitute for:
+
+- [UEFITool](https://github.com/LongSoft/UEFITool) — visual structure inspection, GUID editing
+- [MEAnalyzer](https://github.com/platomav/MEAnalyzer) — Intel ME firmware sanity / version check
+- `flashrom` / CH341A — actually programming the SPI chip
+
+## Requirements
+
+- Python 3.10+ (uses PEP 604 union syntax `X | None`)
+- No third-party packages — stdlib only (`argparse`, `hashlib`, `zlib`, `shutil`)
+
+## Quick start
+
+1. Dump your board twice with a CH341A and verify the two dumps match
+   (md5 on both — they MUST be identical, otherwise re-dump).
+2. Obtain a clean BASE of the same size (8 MiB for B75M-DGS / W25Q64BV).
+   Factory ROM padded to full size, or a known-good modded ROM.
+3. Dry-run first — read the report without writing anything:
+   ```sh
+   python bios_heal.py BASE.bin DUMP.bin -o OUT.bin --dry-run
+   ```
+4. Read `OUT.bin.report.txt`. Confirm:
+   - Global similarity is reasonable (>80% normal, >90% ideal)
+   - FFSv2 volume table shows volumes you expect
+   - Per-region similarity looks sane
+5. Run the real heal:
+   ```sh
+   python bios_heal.py BASE.bin DUMP.bin -o OUT.bin
+   ```
+6. Flash `OUT.bin` with CH341A + AsProgrammer / NeoProgrammer
+   (chip: W25Q64BV). Always **Erase → Write → Verify**.
+
+## Arguments
+
+### Positional
+
+| Arg | Purpose |
+|---|---|
+| `BASE` | clean reference BIOS image (`.bin`) — source of healing bytes |
+| `DUMP` | corrupted/board-specific dump (`.bin`) — source of preserved zones |
+
+### Required
+
+| Flag | Purpose |
+|---|---|
+| `-o, --output FILE` | output `.bin` path. A sibling `FILE.report.txt` is also written |
+
+### Tuning
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--threshold FLOAT` | `0.90` | min global byte-similarity to apply heal. Below this, DUMP copied unchanged (unless `--force`) |
+| `--preserve LIST` | `me,nvram` | comma-separated zones copied verbatim from DUMP. Choices: `fd,me,bios,gbe,pdr,nvram` |
+| `--padding-min N` | `256` | min consecutive `0xFF` bytes counted as a padding run |
+
+### Mode flags
+
+| Flag | Purpose |
+|---|---|
+| `--force` | apply heal even when similarity below `--threshold` |
+| `--dry-run` | compute the `.report.txt` only; never write the `.bin` |
+| `--no-backup` | skip the automatic `<dump>.bak` copy |
+
+## Region layout (auto-detected from Intel FD)
+
+For ASRock B75M-DGS / W25Q64BV the FD declares:
+
+| Offset | Region | Length | Heal action |
+|---|---|---|---|
+| `0x000000` | Descriptor | 4 KiB | heal from BASE |
+| `0x001000` | ME | ~5 MiB | **PRESERVED from DUMP** (board fuse / MEBx) |
+| `0x500000` | NVRAM volume | 128 KiB | **PRESERVED from DUMP** (serial / UUID / MAC) |
+| `0x520000` | BIOS code | ~3 MiB | heal from BASE (DXE / PEI / BB) |
+
+The NVRAM zone is *not* in the FD — it is auto-derived by scanning the
+BIOS region for the first FFSv2 volume header signature (`_FVH`,
+GUID `8C8CE578-8A3D-4F1C-9935-896185C32DD3`).
+
+## Report file format
+
+`OUTPUT.bin.report.txt` sections:
+
+| Section | Content |
+|---|---|
+| Layout | per-region size + similarity, `[PRESERVED]` tag |
+| Global similarity | overall byte-match ratio + threshold + decision |
+| FFSv2 volumes | offset, length, base CRC32, dump CRC32, header check, status |
+| Padding runs | counts in base / dump / healed, lost & gained sets |
+| Diff summary | bytes changed vs dump; preserve-zone diff (must be 0) |
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | heal applied successfully (output written) |
+| `1` | similarity below threshold and `--force` not set (output = dump unchanged), or `--dry-run` completed without heal |
+| `2` | base and dump have different sizes |
+| `3` | output size sanity check failed |
+
+## Common scenarios
+
+**Standard heal, modded BIOS into healthy board dump**
+```sh
+python bios_heal.py modded.bin board_dump.bin -o final.bin
+```
+
+**Forensic comparison only, no write**
+```sh
+python bios_heal.py clean.bin dump.bin -o stub.bin --dry-run
+```
+
+**Heavily corrupted dump, override threshold**
+```sh
+python bios_heal.py clean.bin dump.bin -o out.bin --force --threshold 0.5
+```
+
+**Preserve NIC MAC if board uses Intel GbE region**
+```sh
+python bios_heal.py clean.bin dump.bin -o out.bin \
+    --preserve me,nvram,gbe
+```
+
+**Quiet padding output (only count runs ≥ 4 KiB)**
+```sh
+python bios_heal.py clean.bin dump.bin -o out.bin --padding-min 4096
+```
+
+## Safety notes
+
+- Always keep `DUMP.bak` (the script makes one automatically). If the
+  healed image bricks the board, restore the original dump.
+- **Do NOT flash a full 8 MiB image** through the motherboard's
+  "Instant Flash" / EFI flash utility — the FD+ME regions are protected
+  and the BIOS-only path will refuse or corrupt. Use an external CH341A
+  programmer with the chip out of socket (or chip-clip with PSU off).
+- If similarity is suspiciously low (< 50%), you probably picked the
+  wrong BASE. Different vendors / BIOS versions for the same chipset
+  are not interchangeable.
+- The heal does **NOT** validate the ME region's internal FPT/FTPR/NFTP
+  checksums. If your ME is corrupted, use MEAnalyzer + the matching
+  clean ME firmware (Intel ME 8.x consumer for B75) to fix it
+  separately, then heal.
+
+## Files touched
+
+Created or overwritten:
+
+- `OUTPUT.bin`
+- `OUTPUT.bin.report.txt`
+- `DUMP.bin.bak` (only if it does not already exist — never overwritten)
+
+## Troubleshooting
+
+| Message | Cause |
+|---|---|
+| `no Intel FD in base — using DEFAULT_LAYOUT` | base has no FD signature `5A A5 F0 0F` @ `0x10`. Either BIOS-region-only image or non-Intel platform. Provide a full 8 MiB Intel image. |
+| `size mismatch: base=X dump=Y` | files differ in length. Re-dump or pad the base to match SPI chip capacity. |
+| `below threshold — copying dump unchanged` | the two images differ significantly. Inspect the report; lower `--threshold` or pick a different BASE. |
+
+## License
+
+[MIT](LICENSE) © 2026 Luan Bogo

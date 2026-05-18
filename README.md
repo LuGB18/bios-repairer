@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/github/LuGB18/bios-repairer/graph/badge.svg?token=V0843PTOC2)](https://codecov.io/github/LuGB18/bios-repairer)
 [![ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
-[![license](https://img.shields.io/github/license/LuGB18/bios-repairer)](LICENSE)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 > Repair corrupted dumps of a BIOS with a base BIOS. Keeps your unique board secrets.
 

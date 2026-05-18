@@ -54,7 +54,7 @@ from pathlib import Path
 
 import bios_heal
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 DEFAULT_PROGRAMMER = "ch341a_spi"
 DEFAULT_CHIP = "W25Q64.V"

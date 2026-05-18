@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] — 2026-05-18
+
+### Added
+
+- First PyPI release. Project name **bios-repairer**. Trusted Publishing
+  configured on the PyPI side; opt-in on the GitHub side via the repo
+  variable `PUBLISH_TO_PYPI=true`.
+
+### Changed
+
+- `pyproject.toml` includes a `[build-system]` block pinning
+  `setuptools >= 77`, `[project.scripts]` entry points
+  (`bios_heal`, `bios_flash`), and an explicit `py-modules` list so
+  setuptools auto-discovery does not bail out on the flat layout.
+
+No code changes; both scripts behave identically to v2.0.0.
+
 ## [2.0.0] — 2026-05-18
 
 ### Added
@@ -131,6 +148,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Human-readable `<output>.report.txt`.
 - MIT license.
 
+[2.0.1]: https://github.com/LuGB18/bios-repairer/releases/tag/v2.0.1
 [2.0.0]: https://github.com/LuGB18/bios-repairer/releases/tag/v2.0.0
 [1.3.0]: https://github.com/LuGB18/bios-repairer/releases/tag/v1.3.0
 [1.2.0]: https://github.com/LuGB18/bios-repairer/releases/tag/v1.2.0

@@ -36,7 +36,7 @@ import zlib
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 FD_SIG_OFFSET = 0x10
 FD_SIG = b"\x5A\xA5\xF0\x0F"

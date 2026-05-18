@@ -36,7 +36,7 @@ import zlib
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "1.3.0"
+__version__ = "2.0.0"
 
 FD_SIG_OFFSET = 0x10
 FD_SIG = b"\x5A\xA5\xF0\x0F"
@@ -529,7 +529,7 @@ def write_report(path: Path, ctx: dict) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     epilog = """\
 EXAMPLES
   # Inspect only (no write), force heal report even if below threshold
@@ -615,7 +615,7 @@ EXIT CODES
                            "if FD is lost or any FFSv2 volume from BASE is missing/changed")
     mode.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     base_path = Path(args.base)
     dump_path = Path(args.dump)

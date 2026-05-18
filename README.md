@@ -8,6 +8,15 @@
 
 > Repair corrupted dumps of a BIOS with a base BIOS. Keeps your unique board secrets.
 
+Since **v2.0.0** the project ships two scripts:
+
+- **`bios_heal.py`** — pure-Python BIOS image surgeon. Merge a clean base
+  with a board dump, preserving identity (ME, NVRAM, DMI variables).
+  Does not touch hardware.
+- **`bios_flash.py`** — companion that drives `flashrom` to read / verify /
+  write the SPI chip via a programmer (CH341A by default) and chain the
+  full pipeline: **read chip → heal → smoke test → write → verify**.
+
 `bios_heal.py` — SPI BIOS dump healer for Intel-descriptor flash images
 (8 MiB / W25Q64BV class). Tested platform: ASRock B75M-DGS (Ivy Bridge,
 AMI Aptio IV).
@@ -57,13 +66,20 @@ showing:
 
 ## Downloads
 
-Prebuilt binaries are attached to every GitHub Release (since v1.3.0).
+Prebuilt binaries are attached to every GitHub Release.
 No Python install required.
 
-- **Windows** — grab `bios_heal.exe` from the latest release page
-  ([Releases](https://github.com/LuGB18/bios-repairer/releases))
-- **Linux** — grab `bios_heal` (single ELF executable) from the same page
-- **From source** — clone and run `python bios_heal.py ...` (Python 3.10+)
+| File | Platform | Tool |
+|---|---|---|
+| `bios_heal-windows-x86_64.exe` | Windows | image surgeon |
+| `bios_heal-linux-x86_64` | Linux | image surgeon |
+| `bios_flash-windows-x86_64.exe` | Windows | flashrom wrapper + chain |
+| `bios_flash-linux-x86_64` | Linux | flashrom wrapper + chain |
+
+Releases page: <https://github.com/LuGB18/bios-repairer/releases>
+
+`bios_flash` additionally requires **flashrom** installed and reachable
+on PATH (or via `--flashrom /path/to/flashrom`).
 
 ## Requirements
 
@@ -288,10 +304,76 @@ Created or overwritten:
 | `size mismatch: base=X dump=Y` | files differ in length. Re-dump or pad the base to match SPI chip capacity. |
 | `below threshold — copying dump unchanged` | the two images differ significantly. Inspect the report; lower `--threshold` or pick a different BASE. |
 
+## `bios_flash.py` — chip operations via flashrom
+
+Wraps `flashrom` so you can drive the SPI programmer (CH341A by default)
+from the same workflow that produces a healed image. Never auto-detects
+on write — chip name must be explicit; clones with identical IDs are
+indistinguishable.
+
+### Subcommands
+
+| Subcommand | Purpose |
+|---|---|
+| `read` | dump the chip to a `.bin` |
+| `verify` | byte-compare the chip against a reference image |
+| `write` | program an image into the chip (requires `--commit`) |
+| `heal-flash` | chain: read x2 → heal vs `--base` → smoke → optionally write |
+
+### Common flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--programmer` | `ch341a_spi` | flashrom `-p` value |
+| `--chip` | `W25Q64.V` | flashrom `-c` value |
+| `--flashrom PATH` | search PATH | explicit flashrom binary |
+| `--json FILE` | (off) | machine-readable result JSON |
+| `--commit` | (off) | required on `write` / `heal-flash` to actually program |
+| `--no-backup` | (off) | skip the mandatory pre-write chip backup |
+
+### `heal-flash` exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | ok (or dry-run completed without `--commit`) |
+| `1-5` | propagated from `bios_heal` (see above) |
+| `10` | flashrom binary not found on PATH |
+| `11` | flashrom probe / read / write failure |
+| `12` | two consecutive chip reads disagree (flaky clip) |
+| `13` | post-write verify failed |
+| `14` | `--commit` not passed but a write was requested |
+
+### Examples
+
+```sh
+# 1. Dump chip to a file
+python bios_flash.py read --chip W25Q64.V -o dump.bin
+
+# 2. Verify the chip matches a known image
+python bios_flash.py verify --chip W25Q64.V --against healed.bin
+
+# 3. Write an image (refuses without --commit)
+python bios_flash.py write --chip W25Q64.V --image healed.bin --commit
+
+# 4. Full chained workflow: read chip, heal against clean base, do NOT
+#    write yet (dry-run). Review the healed_TIMESTAMP.bin afterwards.
+python bios_flash.py heal-flash \
+    --base clean.bin \
+    --chip W25Q64.V \
+    --preserve me,dmi
+
+# 5. Same chain, but commit the result to the chip and verify
+python bios_flash.py heal-flash \
+    --base clean.bin \
+    --chip W25Q64.V \
+    --preserve me,dmi \
+    --commit
+```
+
 ## Development
 
 ```sh
-# install dev deps (pytest, pytest-cov, ruff)
+# install dev deps (pytest, pytest-cov, ruff, pyinstaller)
 python -m pip install -e ".[dev]"
 
 # run tests

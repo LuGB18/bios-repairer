@@ -14,18 +14,20 @@ permissions:
 
 jobs:
   build:
-    name: build (${{ matrix.os }})
+    name: build (${{ matrix.os }} / ${{ matrix.script }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [windows-latest, ubuntu-latest]
+        script: [bios_heal, bios_flash]
         include:
           - os: windows-latest
-            artifact: bios_heal.exe
-            target_name: bios_heal-windows-x86_64.exe
+            os_label: windows-x86_64
+            ext: .exe
           - os: ubuntu-latest
-            artifact: bios_heal
-            target_name: bios_heal-linux-x86_64
+            os_label: linux-x86_64
+            ext: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -39,31 +41,34 @@ jobs:
           python -m pip install pyinstaller
 
       - name: Build single-file binary
-        run: pyinstaller --onefile --name bios_heal bios_heal.py
+        run: pyinstaller --onefile --name ${{ matrix.script }} ${{ matrix.script }}.py
 
       - name: Rename artifact (platform suffix)
         shell: bash
         run: |
-          if [ -f "dist/${{ matrix.artifact }}" ]; then
-            mv "dist/${{ matrix.artifact }}" "dist/${{ matrix.target_name }}"
+          SRC="dist/${{ matrix.script }}${{ matrix.ext }}"
+          DST="dist/${{ matrix.script }}-${{ matrix.os_label }}${{ matrix.ext }}"
+          if [ -f "$SRC" ]; then
+            mv "$SRC" "$DST"
           fi
           ls -la dist/
 
-      - name: Smoke run --version on the built binary
+      - name: Smoke run --version on built binary (Linux)
         if: runner.os == 'Linux'
         run: |
-          chmod +x "dist/${{ matrix.target_name }}"
-          "./dist/${{ matrix.target_name }}" --version
+          BIN="dist/${{ matrix.script }}-${{ matrix.os_label }}"
+          chmod +x "$BIN"
+          "./$BIN" --version
 
-      - name: Smoke run --version (Windows)
+      - name: Smoke run --version on built binary (Windows)
         if: runner.os == 'Windows'
-        run: dist\${{ matrix.target_name }} --version
+        run: dist\${{ matrix.script }}-${{ matrix.os_label }}${{ matrix.ext }} --version
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target_name }}
-          path: dist/${{ matrix.target_name }}
+          name: ${{ matrix.script }}-${{ matrix.os_label }}
+          path: dist/${{ matrix.script }}-${{ matrix.os_label }}${{ matrix.ext }}
 
   release:
     name: publish release
